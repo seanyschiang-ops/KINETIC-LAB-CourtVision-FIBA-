@@ -3239,7 +3239,7 @@
           showToast('⭐ 已將場上 5 人回復為「' + cur.name + '」先發陣容');
         },
 
-        openMatchManagerModal: function() {
+                openMatchManagerModal: function() {
           syncActiveMatchToStore();
           var inpDate = getEl('inpNewMatchDate');
           if (inpDate && !inpDate.value) {
@@ -3249,15 +3249,17 @@
           if (inpTime && !inpTime.value) {
             inpTime.value = '19:00';
           }
+          var validIds = appState.players.map(function(p) { return p.id; });
           var curMatch = appState.seasonMatches.find(function(m) { return m.id === appState.activeMatchId; });
-          var baseFive = (curMatch && Array.isArray(curMatch.startingLineup) && curMatch.startingLineup.length === 5)
+          var baseFive = (curMatch && Array.isArray(curMatch.startingLineup))
             ? curMatch.startingLineup
             : appState.activeLineup;
-          tempNewMatchStarters = sortPlayerIdsByJersey(baseFive, appState.players);
+          tempNewMatchStarters = sortPlayerIdsByJersey((baseFive || []).filter(function(pid) { return validIds.indexOf(pid) !== -1; }), appState.players);
           this.renderNewMatchStarterChips();
           this.renderMatchManagerList();
           setDisplay('matchManagerModal', 'flex');
         },
+
 
         toggleNewMatchStarter: function(pid) {
           var idx = tempNewMatchStarters.indexOf(pid);
@@ -3335,7 +3337,7 @@
           showToast('✅ 已依時間排序建立場次「' + name + '」並套用先發 5 人！');
         },
 
-        openEditMatchStarterModal: function(matchId) {
+                openEditMatchStarterModal: function(matchId) {
           var target = appState.seasonMatches.find(function(m) { return m.id === matchId; });
           if (!target) return;
           tempEditMatchId = matchId;
@@ -3347,13 +3349,13 @@
           if (inpD) inpD.value = target.date || new Date().toISOString().slice(0, 10);
           if (inpT) inpT.value = target.startTime || '19:00';
 
-          var base = (Array.isArray(target.startingLineup) && target.startingLineup.length === 5)
-            ? target.startingLineup
-            : appState.players.slice(0, 5).map(function(p) { return p.id; });
-          tempEditMatchStarters = sortPlayerIdsByJersey(base, appState.players);
+          var validIds = appState.players.map(function(p) { return p.id; });
+          var base = Array.isArray(target.startingLineup) ? target.startingLineup : [];
+          tempEditMatchStarters = sortPlayerIdsByJersey(base.filter(function(pid) { return validIds.indexOf(pid) !== -1; }), appState.players);
           this.renderEditMatchStarterChips();
           setDisplay('editMatchStarterModal', 'flex');
         },
+
 
         toggleEditMatchStarter: function(pid) {
           var idx = tempEditMatchStarters.indexOf(pid);
@@ -4862,11 +4864,13 @@
         },
 
         // 換人與防守紀錄
-        openSubModal: function() {
-          tempSub = appState.activeLineup.slice();
+                openSubModal: function() {
+          var validIds = appState.players.map(function(p) { return p.id; });
+          tempSub = (appState.activeLineup || []).filter(function(pid) { return validIds.indexOf(pid) !== -1; });
           this.renderSubModalList();
           setDisplay('subModal', 'flex');
         },
+
         toggleSubPlayer: function(id) {
           var idx = tempSub.indexOf(id);
           if (idx !== -1) tempSub.splice(idx, 1);
