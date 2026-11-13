@@ -5390,17 +5390,31 @@
           saveAppState();
           showToast('🏀 已新增球員 #' + num + ' ' + name + '（已依背號自動排序）');
         },
-        deletePlayer: function(id) {
-          if (appState.players.length <= 5) { showToast('⚠️ 球隊至少需維持 5 位球員！'); return; }
-          appState.players = appState.players.filter(function(p) { return p.id !== id; });
-          appState.activeLineup = appState.activeLineup.filter(function(pid) { return pid !== id; });
-          if (appState.activeLineup.length < 5 && appState.players.length >= 5) {
-            appState.activeLineup.push(appState.players[0].id);
-          }
-          this.renderSettingsModal();
-          this.renderAll();
-          saveAppState();
-        },
+             deletePlayer: function(id) {
+       if (appState.players.length <= 5) { showToast('⚠️ 球隊至少需維持 5 位球員！'); return; }
+       appState.players = sortPlayersByJersey(appState.players.filter(function(p) { return p.id !== id; }));
+       var validIds = appState.players.map(function(p) { return p.id; });
+       var cleanLineup = function(arr) {
+         var res = (arr || []).filter(function(pid) { return pid !== id && validIds.indexOf(pid) !== -1; });
+         for (var i = 0; i < appState.players.length && res.length < 5; i++) {
+           if (res.indexOf(appState.players[i].id) === -1) res.push(appState.players[i].id);
+         }
+         return sortPlayerIdsByJersey(res, appState.players);
+       };
+       appState.activeLineup = cleanLineup(appState.activeLineup);
+       (appState.seasonMatches || []).forEach(function(m) {
+         m.startingLineup = cleanLineup(m.startingLineup);
+         m.activeLineup = cleanLineup(m.activeLineup);
+       });
+       appState.filterPlayers = appState.filterPlayers.filter(function(pid) { return pid !== id; });
+       appState.seasonLineupFilterPlayers = appState.seasonLineupFilterPlayers.filter(function(pid) { return pid !== id; });
+       if (pending.playerId === id) pending.playerId = appState.activeLineup[0];
+       this.renderSettingsModal();
+       this.renderAll();
+       saveAppState();
+       showToast('🗑️ 已刪除球員並同步清理所有先發名單');
+     },
+
         addTactic: function() {
           var name = getEl('inpNewTacticName').value.trim();
           var color = getEl('inpNewTacticColor').value;
