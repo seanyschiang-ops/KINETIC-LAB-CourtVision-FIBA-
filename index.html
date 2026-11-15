@@ -5877,7 +5877,10 @@
     window.__cvCloudBridge.init();
   </script>
 <!-- ========================================================
-     KINETIC LAB 熱修補丁：先發幽靈 ID 自動清理 + 上場時間(MIN) / 場均時間(MPG)
+     KINETIC LAB 整合補丁：
+     1. 標點視窗「🟢 場上 5 人專屬高亮框」與板凳分區
+     2. 先發／換人幽靈 ID 自動清理
+     3. 單場上場時間 (MIN) & 賽季場均時間 (MPG)
      ======================================================== -->
 <script>
 (function() {
@@ -5894,18 +5897,101 @@
       return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
     }
 
-    // 1. 修復先發與換人幽靈 ID 卡死：自動清理不存在的球員 ID
+    // --------------------------------------------------------
+    // 功能 A：標點彈窗自動將「場上 5 人」用專屬高亮框獨立置頂分區
+    // --------------------------------------------------------
+    function enhanceEventModalPlayers() {
+      var container = document.getElementById('modalPlayerSelectChips');
+      if (!container) return;
+
+      var allChips = Array.from(container.querySelectorAll('button.click-chip'));
+      if (allChips.length === 0) return;
+
+      // 避免重複包裹
+      if (container.querySelector('.on-court-highlight-box')) return;
+
+      var onCourtChips = [];
+      var benchChips = [];
+      allChips.forEach(function(btn) {
+        if (btn.innerText.indexOf('(場上)') !== -1) {
+          onCourtChips.push(btn);
+        } else {
+          benchChips.push(btn);
+        }
+      });
+
+      // 清空原容器並建立「場上 5 人專屬高亮框」與「場下板凳區」
+      container.innerHTML = '';
+      container.style.display = 'flex';
+      container.style.flexDirection = 'column';
+      container.style.gap = '8px';
+
+      var onCourtBox = document.createElement('div');
+      onCourtBox.className = 'on-court-highlight-box';
+      onCourtBox.style.cssText = 'background:rgba(37,99,235,0.14);border:1.5px solid #38bdf8;border-radius:9px;padding:8px;display:flex;flex-direction:column;gap:6px;box-shadow:0 0 12px rgba(56,189,248,0.18);';
+
+      var onCourtHeader = document.createElement('div');
+      onCourtHeader.style.cssText = 'display:flex;justify-content:space-between;align-items:center;font-size:11px;font-weight:900;color:#38bdf8;';
+      onCourtHeader.innerHTML = '<span>🟢 場上 5 人 (On-Court · 快速點選)</span><span style="font-size:10px;color:#93c5fd;">目前在場陣容</span>';
+      onCourtBox.appendChild(onCourtHeader);
+
+      var onCourtGrid = document.createElement('div');
+      onCourtGrid.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;';
+      onCourtChips.forEach(function(btn) {
+        // 移除原本冗長的 (場上) 字樣並放大按鈕方便單手快點
+        btn.innerHTML = btn.innerHTML.replace(/<span[^>]*>\(場上\)<\/span>/g, '').trim();
+        btn.style.padding = '8px 12px';
+        btn.style.fontSize = '12px';
+        btn.style.fontWeight = '900';
+        onCourtGrid.appendChild(btn);
+      });
+      onCourtBox.appendChild(onCourtGrid);
+      container.appendChild(onCourtBox);
+
+      if (benchChips.length > 0) {
+        var benchBox = document.createElement('div');
+        benchBox.style.cssText = 'background:#090e1d;border:1px solid #1e2e4e;border-radius:8px;padding:6px 8px;display:flex;flex-direction:column;gap:5px;opacity:0.85;';
+
+        var benchHeader = document.createElement('div');
+        benchHeader.style.cssText = 'font-size:10px;font-weight:700;color:#64748b;';
+        benchHeader.innerText = '🪑 場下板凳球員 (Bench)';
+        benchBox.appendChild(benchHeader);
+
+        var benchGrid = document.createElement('div');
+        benchGrid.style.cssText = 'display:flex;flex-wrap:wrap;gap:5px;';
+        benchChips.forEach(function(btn) {
+          btn.style.padding = '4px 8px';
+          btn.style.fontSize = '11px';
+          benchGrid.appendChild(btn);
+        });
+        benchBox.appendChild(benchGrid);
+        container.appendChild(benchBox);
+      }
+
+      // 若目前預設勾選的球員不在場上 5 人內，自動切換成場上第一位球員
+      var hasActiveOnCourt = onCourtChips.some(function(b) { return b.classList.contains('active'); });
+      if (!hasActiveOnCourt && onCourtChips.length > 0) {
+        onCourtChips[0].click();
+      }
+    }
+
+    var origRenderModalChips = window.cv.renderModalChips;
+    window.cv.renderModalChips = function() {
+      origRenderModalChips.apply(this, arguments);
+      enhanceEventModalPlayers();
+    };
+
+    var origOpenEventModal = window.cv.openEventModal;
+    window.cv.openEventModal = function(x, y) {
+      origOpenEventModal.apply(this, arguments);
+      enhanceEventModalPlayers();
+    };
+
+    // --------------------------------------------------------
+    // 功能 B：修復先發與換人幽靈 ID 卡死
+    // --------------------------------------------------------
     function purgeGhostPlayersInDOMAndState() {
       try {
-        var validIds = [];
-        document.querySelectorAll('#settingsPlayerList button').forEach(function(btn) {
-          var oc = btn.getAttribute('onclick') || '';
-          var m = oc.match(/deletePlayer\('([^']+)'\)/);
-          if (m) validIds.push(m[1]);
-        });
-        if (validIds.length === 0) return;
-
-        // 清理主畫面場上5人顯示
         var bar = document.getElementById('activeLineupChips');
         if (bar) {
           bar.querySelectorAll('.lineup-pill').forEach(function(pill) {
@@ -5915,11 +6001,9 @@
       } catch (e) {}
     }
 
-    // 攔截並修復 openMatchManagerModal / openEditMatchStarterModal / openSubModal / deletePlayer
     var origOpenMatchMgr = window.cv.openMatchManagerModal;
     window.cv.openMatchManagerModal = function() {
       origOpenMatchMgr.apply(this, arguments);
-      // 強制讓沒有亮起對應球員的幽靈計數歸零
       setTimeout(function() {
         var grid = document.getElementById('newMatchStarterChips');
         var cnt = document.getElementById('lblNewMatchStarterCount');
@@ -5962,7 +6046,6 @@
       }, 20);
     };
 
-    // 自動清洗 localStorage 裡的幽靈先發 ID 並重建乾淨陣列
     function sanitizeStoredGhostLineups() {
       try {
         var KEY = 'CV_FIBA_MULTI_TEAM_V9';
@@ -6000,7 +6083,9 @@
       } catch (e) {}
     }
 
-    // 2. 上場時間 (MIN) 與場均時間 (MPG) 追蹤引擎
+    // --------------------------------------------------------
+    // 功能 C：上場時間 (MIN) 與場均時間 (MPG) 追蹤引擎
+    // --------------------------------------------------------
     var MIN_STORE_KEY = 'CV_FIBA_PLAYER_MINUTES_V1';
     function loadMinStore() {
       try { return JSON.parse(localStorage.getItem(MIN_STORE_KEY) || '{}'); } catch (e) { return {}; }
@@ -6033,7 +6118,6 @@
       return ids;
     }
 
-    // 每秒監測計時器是否處於「暫停」(代表計時器正在倒數運行)
     setInterval(function() {
       var btn = document.getElementById('btnTimerToggle');
       if (btn && btn.innerText.indexOf('暫停') !== -1) {
@@ -6051,7 +6135,6 @@
       }
     }, 1000);
 
-    // 允許點擊 MIN 儲存格手動微調上場分鐘數
     window.__cvEditPlayerMin = function(mId, pid, pName) {
       var store = loadMinStore();
       var curSec = (store[mId] && store[mId][pid]) ? store[mId][pid] : 0;
@@ -6066,13 +6149,11 @@
       injectMinutesColumns();
     };
 
-    // 3. 自動在單場 Box Score 插入 MIN 欄位，在賽季數據表插入 MPG 欄位
     function injectMinutesColumns() {
       var store = loadMinStore();
       var mId = getActiveMatchIdSafe();
       var matchSecMap = store[mId] || {};
 
-      // 建立背號+姓名 -> playerId 對照表
       var nameToId = {};
       var selP = document.getElementById('selMatchFilterPlayer');
       if (selP) {
@@ -6081,7 +6162,6 @@
         });
       }
 
-      // (A) 單場 Box Score 表格插入 MIN
       var boxBody = document.getElementById('boxScoreTableBody');
       if (boxBody && boxBody.parentElement) {
         var boxHeadRow = boxBody.parentElement.querySelector('thead tr');
@@ -6109,7 +6189,6 @@
         });
       }
 
-      // (B) 賽季數據表插入 MPG
       var seasonBody = document.getElementById('seasonPlayerTableBody');
       if (seasonBody && seasonBody.parentElement) {
         var sHeadRow = seasonBody.parentElement.querySelector('thead tr');
@@ -6120,7 +6199,6 @@
           sHeadRow.insertBefore(thMpg, sHeadRow.children[2]);
         }
 
-        // 取得目前賽季勾選的場次 ID
         var checkedMatchIds = [];
         document.querySelectorAll('#seasonMatchMultiChipsGrid button.checked').forEach(function(btn) {
           var oc = btn.getAttribute('onclick') || '';
@@ -6159,11 +6237,17 @@
       }
     }
 
-    // 包裝 renderAll，每次畫面更新時自動清洗幽靈 ID 並渲染 MIN / MPG
     var origRenderAll = window.cv.renderAll;
     window.cv.renderAll = function() {
       origRenderAll.apply(this, arguments);
       purgeGhostPlayersInDOMAndState();
+      injectMinutesColumns();
+    };
+
+    var origApplyRemote = window.cv.applyRemoteState;
+    window.cv.applyRemoteState = function(parsed) {
+      origApplyRemote.apply(this, arguments);
+      sanitizeStoredGhostLineups();
       injectMinutesColumns();
     };
 
