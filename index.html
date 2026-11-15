@@ -5876,5 +5876,313 @@
 
     window.__cvCloudBridge.init();
   </script>
+<!-- ========================================================
+     KINETIC LAB 熱修補丁：先發幽靈 ID 自動清理 + 上場時間(MIN) / 場均時間(MPG)
+     ======================================================== -->
+<script>
+(function() {
+  function initKineticPatch() {
+    if (!window.cv) {
+      setTimeout(initKineticPatch, 200);
+      return;
+    }
+
+    function fmtSec(sec) {
+      sec = Math.max(0, Math.round(sec || 0));
+      var m = Math.floor(sec / 60);
+      var s = sec % 60;
+      return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    // 1. 修復先發與換人幽靈 ID 卡死：自動清理不存在的球員 ID
+    function purgeGhostPlayersInDOMAndState() {
+      try {
+        var validIds = [];
+        document.querySelectorAll('#settingsPlayerList button').forEach(function(btn) {
+          var oc = btn.getAttribute('onclick') || '';
+          var m = oc.match(/deletePlayer\('([^']+)'\)/);
+          if (m) validIds.push(m[1]);
+        });
+        if (validIds.length === 0) return;
+
+        // 清理主畫面場上5人顯示
+        var bar = document.getElementById('activeLineupChips');
+        if (bar) {
+          bar.querySelectorAll('.lineup-pill').forEach(function(pill) {
+            if (pill.innerText.indexOf('#?') !== -1) pill.remove();
+          });
+        }
+      } catch (e) {}
+    }
+
+    // 攔截並修復 openMatchManagerModal / openEditMatchStarterModal / openSubModal / deletePlayer
+    var origOpenMatchMgr = window.cv.openMatchManagerModal;
+    window.cv.openMatchManagerModal = function() {
+      origOpenMatchMgr.apply(this, arguments);
+      // 強制讓沒有亮起對應球員的幽靈計數歸零
+      setTimeout(function() {
+        var grid = document.getElementById('newMatchStarterChips');
+        var cnt = document.getElementById('lblNewMatchStarterCount');
+        if (grid && cnt) {
+          var activeBtns = grid.querySelectorAll('.click-chip.active-amber').length;
+          cnt.innerText = '已選 ' + activeBtns + ' / 5 人';
+          cnt.style.color = (activeBtns === 5) ? '#10b981' : '#f59e0b';
+        }
+      }, 20);
+    };
+
+    var origOpenEditStarter = window.cv.openEditMatchStarterModal;
+    window.cv.openEditMatchStarterModal = function(matchId) {
+      origOpenEditStarter.apply(this, arguments);
+      setTimeout(function() {
+        var grid = document.getElementById('editMatchStarterChips');
+        var cnt = document.getElementById('lblEditMatchStarterCount');
+        if (grid && cnt) {
+          var activeBtns = grid.querySelectorAll('.click-chip.active-amber').length;
+          cnt.innerText = '已選 ' + activeBtns + ' / 5 人';
+          cnt.style.color = (activeBtns === 5) ? '#10b981' : '#f59e0b';
+        }
+      }, 20);
+    };
+
+    var origOpenSub = window.cv.openSubModal;
+    window.cv.openSubModal = function() {
+      origOpenSub.apply(this, arguments);
+      setTimeout(function() {
+        var list = document.getElementById('subPlayerCheckboxList');
+        var cnt = document.getElementById('lblSubCount');
+        if (list && cnt) {
+          var onCourtCount = 0;
+          list.querySelectorAll('div[onclick*="toggleSubPlayer"]').forEach(function(row) {
+            if (row.innerText.indexOf('✔ 在場') !== -1) onCourtCount++;
+          });
+          cnt.innerText = '已選 ' + onCourtCount + ' / 5 人';
+          cnt.style.color = (onCourtCount === 5) ? '#10b981' : '#f59e0b';
+        }
+      }, 20);
+    };
+
+    // 自動清洗 localStorage 裡的幽靈先發 ID 並重建乾淨陣列
+    function sanitizeStoredGhostLineups() {
+      try {
+        var KEY = 'CV_FIBA_MULTI_TEAM_V9';
+        var raw = localStorage.getItem(KEY);
+        if (!raw) return;
+        var st = JSON.parse(raw);
+        if (!st || !Array.isArray(st.teams)) return;
+        var changed = false;
+        st.teams.forEach(function(team) {
+          var validIds = (team.players || []).map(function(p) { return p.id; });
+          if (validIds.length === 0) return;
+          (team.seasons || []).forEach(function(season) {
+            (season.matches || []).forEach(function(m) {
+              ['startingLineup', 'activeLineup'].forEach(function(field) {
+                if (Array.isArray(m[field])) {
+                  var filtered = m[field].filter(function(id) { return validIds.indexOf(id) !== -1; });
+                  if (filtered.length !== m[field].length) {
+                    for (var i = 0; i < validIds.length && filtered.length < 5; i++) {
+                      if (filtered.indexOf(validIds[i]) === -1) filtered.push(validIds[i]);
+                    }
+                    m[field] = filtered;
+                    changed = true;
+                  }
+                }
+              });
+            });
+          });
+        });
+        if (changed) {
+          localStorage.setItem(KEY, JSON.stringify(st));
+          if (window.cv.applyRemoteState) {
+            window.cv.applyRemoteState(st);
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 2. 上場時間 (MIN) 與場均時間 (MPG) 追蹤引擎
+    var MIN_STORE_KEY = 'CV_FIBA_PLAYER_MINUTES_V1';
+    function loadMinStore() {
+      try { return JSON.parse(localStorage.getItem(MIN_STORE_KEY) || '{}'); } catch (e) { return {}; }
+    }
+    function saveMinStore(obj) {
+      try { localStorage.setItem(MIN_STORE_KEY, JSON.stringify(obj)); } catch (e) {}
+    }
+
+    function getActiveMatchIdSafe() {
+      var sel = document.getElementById('selActiveMatch');
+      return sel ? sel.value : 'default_match';
+    }
+
+    function getOnCourtPlayerIdsSafe() {
+      var ids = [];
+      var pills = document.querySelectorAll('#activeLineupChips .lineup-pill');
+      var nums = [];
+      pills.forEach(function(p) {
+        var m = p.innerText.match(/#([^\s]+)/);
+        if (m) nums.push(m[1]);
+      });
+      var selP = document.getElementById('selMatchFilterPlayer');
+      if (selP) {
+        Array.from(selP.options).forEach(function(opt) {
+          if (opt.value === 'ALL') return;
+          var m = opt.text.match(/^#([^\s]+)\s/);
+          if (m && nums.indexOf(m[1]) !== -1) ids.push(opt.value);
+        });
+      }
+      return ids;
+    }
+
+    // 每秒監測計時器是否處於「暫停」(代表計時器正在倒數運行)
+    setInterval(function() {
+      var btn = document.getElementById('btnTimerToggle');
+      if (btn && btn.innerText.indexOf('暫停') !== -1) {
+        var mId = getActiveMatchIdSafe();
+        var onCourt = getOnCourtPlayerIdsSafe();
+        if (mId && onCourt.length > 0) {
+          var store = loadMinStore();
+          if (!store[mId]) store[mId] = {};
+          onCourt.forEach(function(pid) {
+            store[mId][pid] = (store[mId][pid] || 0) + 1;
+          });
+          saveMinStore(store);
+          injectMinutesColumns();
+        }
+      }
+    }, 1000);
+
+    // 允許點擊 MIN 儲存格手動微調上場分鐘數
+    window.__cvEditPlayerMin = function(mId, pid, pName) {
+      var store = loadMinStore();
+      var curSec = (store[mId] && store[mId][pid]) ? store[mId][pid] : 0;
+      var curMin = (curSec / 60).toFixed(1);
+      var input = prompt('請輸入 ' + pName + ' 本場上場時間（分鐘，例如 18.5 或 24）：', curMin);
+      if (input === null) return;
+      var val = parseFloat(input);
+      if (isNaN(val) || val < 0) return;
+      if (!store[mId]) store[mId] = {};
+      store[mId][pid] = Math.round(val * 60);
+      saveMinStore(store);
+      injectMinutesColumns();
+    };
+
+    // 3. 自動在單場 Box Score 插入 MIN 欄位，在賽季數據表插入 MPG 欄位
+    function injectMinutesColumns() {
+      var store = loadMinStore();
+      var mId = getActiveMatchIdSafe();
+      var matchSecMap = store[mId] || {};
+
+      // 建立背號+姓名 -> playerId 對照表
+      var nameToId = {};
+      var selP = document.getElementById('selMatchFilterPlayer');
+      if (selP) {
+        Array.from(selP.options).forEach(function(opt) {
+          if (opt.value !== 'ALL') nameToId[opt.text.trim()] = opt.value;
+        });
+      }
+
+      // (A) 單場 Box Score 表格插入 MIN
+      var boxBody = document.getElementById('boxScoreTableBody');
+      if (boxBody && boxBody.parentElement) {
+        var boxHeadRow = boxBody.parentElement.querySelector('thead tr');
+        if (boxHeadRow && !boxHeadRow.querySelector('.th-min-col')) {
+          var th = document.createElement('th');
+          th.className = 'th-min-col';
+          th.innerText = 'MIN';
+          boxHeadRow.insertBefore(th, boxHeadRow.children[1]);
+        }
+        boxBody.querySelectorAll('tr').forEach(function(tr) {
+          if (tr.children.length < 2) return;
+          var pLabel = tr.children[0].innerText.trim();
+          var pid = nameToId[pLabel] || pLabel;
+          var sec = matchSecMap[pid] || 0;
+          var td = tr.querySelector('.td-min-col');
+          if (!td) {
+            td = document.createElement('td');
+            td.className = 'td-min-col';
+            td.style.cssText = 'color:#38bdf8;font-weight:bold;cursor:pointer;text-decoration:underline dotted;';
+            td.title = '點擊可手動修改上場時間';
+            tr.insertBefore(td, tr.children[1]);
+          }
+          td.innerText = fmtSec(sec);
+          td.onclick = function() { window.__cvEditPlayerMin(mId, pid, pLabel); };
+        });
+      }
+
+      // (B) 賽季數據表插入 MPG
+      var seasonBody = document.getElementById('seasonPlayerTableBody');
+      if (seasonBody && seasonBody.parentElement) {
+        var sHeadRow = seasonBody.parentElement.querySelector('thead tr');
+        if (sHeadRow && !sHeadRow.querySelector('.th-mpg-col')) {
+          var thMpg = document.createElement('th');
+          thMpg.className = 'th-mpg-col';
+          thMpg.innerText = 'MPG';
+          sHeadRow.insertBefore(thMpg, sHeadRow.children[2]);
+        }
+
+        // 取得目前賽季勾選的場次 ID
+        var checkedMatchIds = [];
+        document.querySelectorAll('#seasonMatchMultiChipsGrid button.checked').forEach(function(btn) {
+          var oc = btn.getAttribute('onclick') || '';
+          var m = oc.match(/toggleSeasonMatchSelection\('([^']+)'\)/);
+          if (m) checkedMatchIds.push(m[1]);
+        });
+        if (checkedMatchIds.length === 0) checkedMatchIds = Object.keys(store);
+
+        seasonBody.querySelectorAll('tr').forEach(function(tr) {
+          if (tr.children.length < 3) return;
+          var pLabel = tr.children[0].innerText.trim();
+          var pid = nameToId[pLabel] || pLabel;
+          var gpText = tr.children[1].innerText.trim();
+          var gp = parseInt(gpText, 10) || 0;
+
+          var totalSec = 0;
+          var timedGames = 0;
+          checkedMatchIds.forEach(function(mid) {
+            if (store[mid] && store[mid][pid] > 0) {
+              totalSec += store[mid][pid];
+              timedGames++;
+            }
+          });
+          var denom = Math.max(gp, timedGames);
+          var mpgStr = (denom > 0 && totalSec > 0) ? fmtSec(Math.round(totalSec / denom)) : '00:00';
+
+          var tdMpg = tr.querySelector('.td-mpg-col');
+          if (!tdMpg) {
+            tdMpg = document.createElement('td');
+            tdMpg.className = 'td-mpg-col';
+            tdMpg.style.cssText = 'color:#6ee7b7;font-weight:bold;';
+            tr.insertBefore(tdMpg, tr.children[2]);
+          }
+          tdMpg.innerText = mpgStr;
+        });
+      }
+    }
+
+    // 包裝 renderAll，每次畫面更新時自動清洗幽靈 ID 並渲染 MIN / MPG
+    var origRenderAll = window.cv.renderAll;
+    window.cv.renderAll = function() {
+      origRenderAll.apply(this, arguments);
+      purgeGhostPlayersInDOMAndState();
+      injectMinutesColumns();
+    };
+
+    var origDeletePlayer = window.cv.deletePlayer;
+    window.cv.deletePlayer = function(id) {
+      origDeletePlayer.apply(this, arguments);
+      sanitizeStoredGhostLineups();
+    };
+
+    sanitizeStoredGhostLineups();
+    injectMinutesColumns();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initKineticPatch);
+  } else {
+    initKineticPatch();
+  }
+})();
+</script>
 </body>
 </html>
